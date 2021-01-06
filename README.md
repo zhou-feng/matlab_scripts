@@ -1,1 +1,1 @@
-# A few of my personal matlab scripts
+# A few of my personal used matlab scripts
