@@ -1,5 +1,5 @@
-function Prepro_SPM_BIDS(datapath, preproOrder, preproParam, task)
-% datapath: where your data is
+function Prepro_SPM_BIDS(datadir, preproOrder, preproParam, task)
+% datadir: where your data is
 % preproOrder: the order of preprocessing, 
 % e.g. preproOrder = {'STC', 'RealignUnwarp','T1norm', 'Smooth'};
 % preproParam: some necessary parameters, e.g. slice order for STC,
@@ -13,41 +13,57 @@ function Prepro_SPM_BIDS(datapath, preproOrder, preproParam, task)
 %
 % Written by Feng Zhou, 12/27/2020
 if nargin < 4
-    task = [];
+    task = '^sub.*nii';
+else
+    task = ['^sub.*', task, '.*nii']; 
 end
-subjfolders = dir(datapath);
+subjfolders = dir(datadir);
 isub = [subjfolders(:).isdir];
 namesubs = {subjfolders(isub).name}';
 namesubs(ismember(namesubs,{'.','..'})) = [];
 nsub = length(namesubs);
 nprepro = length(preproOrder);
-for ii = 1:nsub
+parfor ii = 1:nsub
     subname = namesubs{ii,1};
     fprintf('Running preprocessing for %s \n \n', subname)
-    Funcdir = fullfile(datapath, subname,'func');
-    T1dir = fullfile(datapath, subname,'anat');
-    if exist(Funcdir, 'dir')
-        taskfiles = spm_select('List',Funcdir,['.*',task, '.*.nii']);
+    funcdir = fullfile(datadir, subname, 'func');
+    anatdir = fullfile(datadir, subname, 'anat');
+    if exist(funcdir, 'dir')
+        taskfiles = spm_select('List', funcdir, task);
+        EPItoUnwarp = spm_select('FPList', funcdir, task);
+        EPItoUnwarp = cellstr(EPItoUnwarp);
         nRuns = size(taskfiles, 1);
         funct = cell(nRuns,1);
         for nn = 1:nprepro
-            clear matlabbatch
+             matlabbatch = [];
             for jj = 1:nRuns
-                funct{jj,1} = cellstr(spm_select('ExtFPList',Funcdir,taskfiles(jj, :)));
+                funct{jj,1} = cellstr(spm_select('ExtFPList', funcdir, ['^', taskfiles(jj, :)])); % fieldmap generates wfmag* files, we will use ^sub* files for further preprocessing
             end
             fn = vertcat(funct{:});
             function_name = preproOrder{nn};
-            if strcmpi(function_name, 'STC') || strcmpi(function_name, 'SliceTiming')
+            if strcmpi(function_name, 'FieldMap') || strcmpi(function_name, 'FieldMapCorrection')
+                phasefile = spm_select('FPList', fullfile(datadir, subname, 'fmap'), '.*phasediff.nii');
+                magnitudefile = spm_select('FPList', fullfile(datadir, subname, 'fmap'), '.*magnitude.*nii');
+                magnitudefile = magnitudefile(1, :); % we just need one magnitude file, the shorter echo time one is better?
+                matlabbatch = FieldMapCorrection(phasefile, magnitudefile, EPItoUnwarp, preproParam);
+                dataprefix = [];
+                parsave(fullfile(funcdir,'FieldMap_Batch.mat'), matlabbatch);
+            elseif strcmpi(function_name, 'STC') || strcmpi(function_name, 'SliceTiming')
                 [dataprefix, matlabbatch] = STC(funct, preproParam);
-                save([Funcdir,'\SliceTiming_Batch.mat'], 'matlabbatch');
+                parsave(fullfile(funcdir,'SliceTiming_Batch.mat'), matlabbatch);
             elseif strcmpi(function_name, 'RealignUnwarp')
-                [dataprefix, matlabbatch] = RealignUnwarp(funct);
-                save([Funcdir,'\RealignUnwarp_Batch.mat'], 'matlabbatch');
+                vdmfiles = spm_select('FPList', fullfile(datadir, subname, 'fmap'), 'vdm.*session.*nii');
+                if ~isempty(vdmfiles)
+                    vdmfiles = cellstr(vdmfiles);
+                    [dataprefix, matlabbatch] = RealignUnwarp(funct, vdmfiles);
+                else [dataprefix, matlabbatch] = RealignUnwarp(funct);
+                end
+                parsave(fullfile(funcdir,'RealignUnwarp_Batch.mat'), matlabbatch);
             elseif strcmpi(function_name, 'Realign')
                 [dataprefix, matlabbatch] = Realign(funct);
-                save([Funcdir,'\Realign_Batch.mat'], 'matlabbatch');
+                parsave(fullfile(funcdir,'Realign_Batch.mat'), matlabbatch);
             elseif strcmpi(function_name, 'EPInorm')
-                meanImgs = cellstr(spm_select('ExtFPListRec',Funcdir,'^mean.*.nii$'));
+                meanImgs = cellstr(spm_select('ExtFPListRec',funcdir,'^mean.*.nii$'));
                 if ~isempty(meanImgs) %mean image required
                     meanImg = meanImgs{1};
                     % in case the mean image is selected? I don't remember.
@@ -57,13 +73,13 @@ for ii = 1:nsub
                         fn(idx) = [];
                     end
                     [dataprefix, matlabbatch] = EPInorm(meanImg, fn, preproParam);
-                    save([Funcdir,'\EPInorm_Batch.mat'], 'matlabbatch');
+                    parsave(fullfile(funcdir,'EPInorm_Batch.mat'), matlabbatch);
                 else
                     error('Couldn''t find mean image! You might consider to get a mean image via ImCalc')
                 end
             elseif strcmpi(function_name, 'T1norm')
-                T1Img = spm_select('FPList',T1dir,'.*T1w.*.nii$');
-                meanImgs = cellstr(spm_select('ExtFPListRec',Funcdir,'^mean.*.nii$'));
+                T1Img = spm_select('FPList',anatdir,'.*T1w.*.nii$');
+                meanImgs = cellstr(spm_select('ExtFPListRec',funcdir,'^mean.*.nii$'));
                 if ~isempty(meanImgs) && ~isempty(T1Img) %mean image and T1 image required
                     T1Img = T1Img(1,:);
                     meanImg = meanImgs{1};
@@ -72,16 +88,18 @@ for ii = 1:nsub
                         fn(idx) = [];
                     end
                     [dataprefix, matlabbatch] = T1norm(T1Img, meanImg, fn, preproParam);
-                    save([Funcdir,'\T1norm_Batch.mat'], 'matlabbatch');
+                    parsave(fullfile(funcdir,'T1norm_Batch.mat'), matlabbatch);
                 else
                     error('couldn''t find mean image or anatomy image! You might consider to get a mean image via ImCalc or/and use EPInorm instead')
                 end
             elseif strcmpi(function_name, 'T1ReNorm')
-                [dataprefix, matlabbatch] = T1ReNorm(fn, T1dir, preproParam);
-                save([Funcdir,'\T1ReNorm_Batch.mat'], 'matlabbatch');
+                [dataprefix, matlabbatch] = T1ReNorm(fn, anatdir, preproParam);
+                parsave(fullfile(funcdir,'T1ReNorm_Batch.mat'), matlabbatch);
             elseif strcmpi(function_name, 'Smooth')
                 [dataprefix, matlabbatch] = smoothImg(fn, preproParam);
-                save([Funcdir,'\Smooth_Batch.mat'], 'matlabbatch');
+                parsave(fullfile(funcdir,'Smooth_Batch.mat'), matlabbatch);
+            else 
+                error('unknown preprocessing step');
             end
             spm_jobman('run', matlabbatch)
             dataprefix = repmat(dataprefix, nRuns, 1);
@@ -92,9 +110,44 @@ for ii = 1:nsub
 end
 end
 
+%% save batch file
+function parsave(fname, matlabbatch)
+  save(fname, 'matlabbatch')
+end
+%% fieldmap correction
+function matlabbatch = FieldMapCorrection(phasefile, magnitudefile, EPItoUnwarp, pm_fmriprepro)
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.data.presubphasemag.phase = {phasefile};
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.data.presubphasemag.magnitude = {magnitudefile};
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.et = pm_fmriprepro.echotimes;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.maskbrain = 0;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.blipdir = pm_fmriprepro.blip;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.tert = pm_fmriprepro.readouttime;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.epifm = 0;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.ajm = 0;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.uflags.method = 'Mark3D';
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.uflags.fwhm = 10;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.uflags.pad = 0;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.uflags.ws = 1;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.template = {fullfile(spm('dir'), 'toolbox', 'FieldMap', 'T1.nii')};
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.fwhm = 5;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.nerode = 2;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.ndilate = 4;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.thresh = 0.5;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.defaults.defaultsval.mflags.reg = 0.02;
+ntasks = size(EPItoUnwarp, 1);
+for t = 1:ntasks
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.session(t).epi = {EPItoUnwarp{t, 1}};
+end
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.matchvdm = 1;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.sessname = 'session';
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.writeunwarped = 0;
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.anat = {''};
+matlabbatch{1}.spm.tools.fieldmap.calculatevdm.subj.matchanat = 0;
+end
+
 %% slice timing correction
 function [prefix, matlabbatch] = STC(fn, pm_fmriprepro)
-prefix = 'a_';
+prefix = 'a';
 matlabbatch{1}.spm.temporal.st.scans = fn';
 matlabbatch{1}.spm.temporal.st.nslices = pm_fmriprepro.nslices;
 matlabbatch{1}.spm.temporal.st.tr = pm_fmriprepro.TR;
@@ -105,12 +158,16 @@ matlabbatch{1}.spm.temporal.st.prefix = prefix;
 end
 
 %% realign & unwarp
-function [prefix, matlabbatch] = RealignUnwarp(fn)
-prefix = 'u_';
+function [prefix, matlabbatch] = RealignUnwarp(fn, vdmfiles)
+prefix = 'u';
 nruns = length(fn);
 for nn = 1:nruns
     matlabbatch{1}.spm.spatial.realignunwarp.data(nn).scans = fn{nn,1};
-    matlabbatch{1}.spm.spatial.realignunwarp.data(nn).pmscan = '';
+    if nargin < 2
+        matlabbatch{1}.spm.spatial.realignunwarp.data(nn).pmscan = '';
+    else
+        matlabbatch{1}.spm.spatial.realignunwarp.data(nn).pmscan = {vdmfiles{nn,1}};
+    end
 end
 matlabbatch{1}.spm.spatial.realignunwarp.eoptions.quality = 0.9;
 matlabbatch{1}.spm.spatial.realignunwarp.eoptions.sep = 4;
@@ -138,7 +195,7 @@ end
 
 %% realign
 function [prefix, matlabbatch] = Realign(fn)
-prefix = 'r_';
+prefix = 'r';
 matlabbatch{1}.spm.spatial.realign.estwrite.data = fn';
 matlabbatch{1}.spm.spatial.realign.estwrite.eoptions.quality = 0.9;
 matlabbatch{1}.spm.spatial.realign.estwrite.eoptions.sep = 4;
@@ -156,7 +213,7 @@ end
 
 %% normalization by mean EPI
 function [prefix, matlabbatch] = EPInorm(meanImg, fn, pm_fmriprepro)
-prefix = 'we_';
+prefix = 'w';
 matlabbatch{1}.spm.spatial.preproc.channel.vols = {meanImg};
 matlabbatch{1}.spm.spatial.preproc.channel.biasreg = 0.001;
 matlabbatch{1}.spm.spatial.preproc.channel.biasfwhm = 60;
@@ -202,7 +259,7 @@ end
 
 %% normalization by T1
 function [prefix, matlabbatch] = T1norm(T1Img, meanImg, fn, pm_fmriprepro)
-prefix = 'wt_';
+prefix = 'w';
 matlabbatch{1}.spm.spatial.preproc.channel.vols = {T1Img};
 matlabbatch{1}.spm.spatial.preproc.channel.biasreg = 0.001;
 matlabbatch{1}.spm.spatial.preproc.channel.biasfwhm = 60;
@@ -274,7 +331,7 @@ end
 
 %% T1 re-norm
 function [prefix, matlabbatch] = T1ReNorm(fn, T1dir, pm_fmriprepro)
-prefix = 'wt_';
+prefix = 'w';
 matlabbatch{1}.spm.spatial.normalise.write.subj.def = cellstr(spm_select('FPListRec',T1dir,'^y_.*\.nii$'));
 matlabbatch{1}.spm.spatial.normalise.write.subj.resample = fn;
 matlabbatch{1}.spm.spatial.normalise.write.woptions.bb = pm_fmriprepro.bb;
@@ -284,7 +341,7 @@ matlabbatch{1}.spm.spatial.normalise.write.woptions.prefix = prefix;
 end
 %% smooth
 function [prefix, matlabbatch] = smoothImg(fn, pm_fmriprepro)
-prefix = 's_';
+prefix = 's';
 matlabbatch{1}.spm.spatial.smooth.data = fn;
 matlabbatch{1}.spm.spatial.smooth.fwhm = pm_fmriprepro.fwhm;
 matlabbatch{1}.spm.spatial.smooth.dtype = 0;

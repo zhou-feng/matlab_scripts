@@ -1,62 +1,94 @@
-function convertdcm2nii(dcmfiledir,outputdir,FuncSeriesDescription,AntSeriesDescription)
+function convertdcm2nii(dcmfiledir,outputdir,FuncProtocol,AntProtocol, FieldMapProtocol)
+% This script is used to convert dcm to nii for the dynamic fear study (Prisma fit)
+
 % dcmfiledir: raw data directory
 % outputdir: output directory
 %
-% see also scanning PC for FuncSeriesDescription and AntSeriesDescription
-% FuncSeriesDescription: Description of the funct, which is stored in dcminfo.SeriesDescription
-% e.g. FuncSeriesDescription = {'IAPS_run_01', 'IAPS_run_02','face_run_01'};
-% AntSeriesDescription: Description of the ant, which is stored in dcminfo.SeriesDescription
-% e.g. AntSeriesDescription = {'3DT1'};
+% see also scanning PC for Protocol names
 %
-% Written by Feng Zhou, 12/27/2020
+% FuncProtocol: ProtocolName of the funct, which is stored in dcminfo.ProtocolName
+% e.g. FuncProtocol = {'fear_run01', 'fear_run02', 'fear_run03'};
+%
+% AntProtocol: ProtocolName of the ant, which is stored in dcminfo.ProtocolName
+% e.g. AntProtocol = {'t1_mprage_sag_iso'};
+%
+% FieldMapProtocol: ProtocolName of the field map, which is stored in dcminfo.ProtocolName
+% % e.g. FieldMapProtocol = {'gre_field_mapping_2mm'};
+
+% Written by Feng Zhou, 10/01/2021
 convertfunc = false;
 convertT1w = false;
-if nargin > 2 && ~isempty(FuncSeriesDescription)
+convertFmap = false;
+if nargin > 2 && ~isempty(FuncProtocol)
     convertfunc = true;
-    FuncSeriesDescription = lower(FuncSeriesDescription);
+    FuncProtocol = lower(FuncProtocol);
 end
-if nargin > 3 && ~isempty(AntSeriesDescription)
+if nargin > 3 && ~isempty(AntProtocol)
     convertT1w = true;
-    AntSeriesDescription = lower(AntSeriesDescription);
+    AntProtocol = lower(AntProtocol);
 end
+if nargin > 4 && ~isempty(FieldMapProtocol)
+    convertFmap = true;
+    FieldMapProtocol = lower(FieldMapProtocol);
+end
+
 dcm2niipath = which('dcm2niix.exe');
 assert(~isempty(dcm2niipath), 'dcm2niix is needed to convert data!')
 dcm2niiexe=['!' dcm2niipath];
+
 subjfolders = dir(dcmfiledir);
-isub = [subjfolders(:).isdir];
-namesubs = {subjfolders(isub).name}';
-namesubs(ismember(namesubs,{'.','..'})) = [];
-nsub = length(namesubs);
+isfolder = [subjfolders(:).isdir];
+subjfolders = {subjfolders(isfolder).name}';
+subjfolders(ismember(subjfolders,{'.','..'})) = [];
+nsub = length(subjfolders);
+
 for ii = 1:nsub
-    subname = namesubs{ii,1};
-    runfolders = dir(fullfile(dcmfiledir,subname));
-    issub = [runfolders(:).isdir];
-    datafolders = {runfolders(issub).name}';
-    datafolders(ismember(datafolders,{'.','..'})) = [];
-    ndatafolder = length(datafolders);
-    for jj = 1:ndatafolder
-        datafoldername = datafolders{jj,1};
-        dcmfiles = dir(fullfile(dcmfiledir, subname, datafoldername, '*.dcm'));
+    subj = subjfolders{ii,1};
+    
+    % subj folder --> another one folder --> dcm folders
+    datafolder = dir(fullfile(dcmfiledir,subj));
+    isfolder = [datafolder(:).isdir];
+    datafolder = {datafolder(isfolder).name}';
+    datafolder(ismember(datafolder,{'.','..'})) = [];
+    
+    dcmfolders = dir(fullfile(dcmfiledir,subj, datafolder{1,1}));
+    isfolder = [dcmfolders(:).isdir];
+    dcmfolders = {dcmfolders(isfolder).name}';
+    dcmfolders(ismember(dcmfolders,{'.','..'})) = [];
+    ndcmfolder = length(dcmfolders);
+    
+    for jj = 1:ndcmfolder
+        dcmfoldername = dcmfolders{jj,1};
+        dcmfiles = dir(fullfile(dcmfiledir, subj, datafolder{1,1}, dcmfoldername, '*.IMA'));
         if ~isempty(dcmfiles)
-        dcmfile = fullfile(dcmfiledir, subname, datafoldername, dcmfiles(1,1).name);
+        dcmfile = fullfile(dcmfiledir, subj, datafolder{1,1}, dcmfoldername, dcmfiles(1,1).name);
         dcminfo = dicominfo(dcmfile);
-        SeriesDescription = lower({dcminfo.SeriesDescription});
-        if convertfunc && ~isempty(intersect(SeriesDescription, FuncSeriesDescription))
+        ProtocolName = lower({dcminfo.ProtocolName});
+        if convertfunc && ~isempty(intersect(ProtocolName, FuncProtocol))
             newsubname = dcminfo.PatientID;
             newsubname = ['sub-', newsubname(isstrprop(newsubname, 'digit'))];
             functpath = fullfile(outputdir, newsubname, 'func');
             if ~exist(functpath, 'dir')
                 mkdir(functpath)
             end
-            eval([dcm2niiexe, '  -b N -z n -f "%i_%p" ',' -o ',functpath, ' ',dcmfile])
-        elseif convertT1w && ~isempty(intersect(SeriesDescription, AntSeriesDescription))
+            eval([dcm2niiexe, '  -b Y -z n -f "%i_%p" ',' -o ',functpath, ' ',dcmfile])
+        elseif convertT1w && ~isempty(intersect(ProtocolName, AntProtocol))
             newsubname = dcminfo.PatientID;
             newsubname = ['sub-', newsubname(isstrprop(newsubname, 'digit'))];
             anatomypath = fullfile(outputdir, newsubname, 'anat');
             if ~exist(anatomypath, 'dir')
                 mkdir(anatomypath)
             end
-           eval([dcm2niiexe, '  -b N -z n -f "%i_%p" ',' -o ',anatomypath, ' ',dcmfile])
+           eval([dcm2niiexe, '  -b Y -z n -f "%i_%p" ',' -o ',anatomypath, ' ',dcmfile])
+           
+        elseif convertFmap && ~isempty(intersect(ProtocolName, FieldMapProtocol))
+            newsubname = dcminfo.PatientID;
+            newsubname = ['sub-', newsubname(isstrprop(newsubname, 'digit'))];
+            anatomypath = fullfile(outputdir, newsubname, 'fmap');
+            if ~exist(anatomypath, 'dir')
+                mkdir(anatomypath)
+            end
+           eval([dcm2niiexe, '  -b Y -z n -f "%i_%p" ',' -o ',anatomypath, ' ',dcmfile])
         end
         end
     end
