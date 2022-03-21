@@ -6,11 +6,11 @@ outputdir = 'G:\DynamicFearBIDS'; % where you want to put the converted data
 % the func and ant descriptions are that you used in the scanning protocals
 FuncProtocol = {'fear_run01', 'fear_run02', 'fear_run03', 'fear_run04', 'movie'};
 AntProtocol = {'t1_mprage_sag_iso_mww64CH'};
-convertdcm2nii_uestc(dcmfiledir,outputdir,FuncProtocol,AntProtocol);
+convertdcm2nii(dcmfiledir,outputdir,FuncProtocol,AntProtocol);
 % if you only want to convert func data
-% convertdcm2nii_uestc(dcmfiledir,outputdir,FuncProtocol)
+% convertdcm2nii(dcmfiledir,outputdir,FuncProtocol)
 % if you only want to convert ant data
-% convertdcm2nii_uestc(dcmfiledir,outputdir, [], AntProtocol)
+% convertdcm2nii(dcmfiledir,outputdir, [], AntProtocol)
 
 %% STEP 2, check numbers of T1w and funct images for each subject
 % Of note, some subjects might have more imgs (e.g. due to re-scanning), which should be removed
@@ -20,7 +20,7 @@ subinfo = checkimgs(outputdir);
 %% STEP 3, discard initial N volumes of func images
 % It seems that the Prisma Fit at SWU scans 10s without saving the images before it sends the trigger
 % Therefor this step might be unnecessary. But I'm removing the first 4 scans anyway
-nVols = 5; % initial 4 volumes
+nVols = 4; % initial 4 volumes
 discard_init_vols(outputdir,nVols);
 
 %% STEP 4, rename nii imgs to fit BIDS
